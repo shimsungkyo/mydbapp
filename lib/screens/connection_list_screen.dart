@@ -7,8 +7,8 @@ import '../models/saved_connection.dart';
 import '../providers/connection_provider.dart';
 import '../services/database_helper.dart';
 import 'connection_edit_screen.dart';
-
 import 'dashboard_screen.dart';
+import '../utils/logger.dart';
 
 class ConnectionListScreen extends StatefulWidget {
   const ConnectionListScreen({super.key});
@@ -47,9 +47,14 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Selected Items'),
-        content: Text('Delete ${_selectedIds.length} items? This cannot be undone.'),
+        content: Text(
+          'Delete ${_selectedIds.length} items? This cannot be undone.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Delete', style: TextStyle(color: Colors.red)),
@@ -82,7 +87,7 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
 
   Future<void> _connectWithSaved(SavedConnection connection) async {
     final provider = Provider.of<ConnectionProvider>(context, listen: false);
-    
+
     // Show loading dialog or snackbar?
     showDialog(
       context: context,
@@ -104,12 +109,12 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
         sshPassword: connection.sshPassword,
         sshKeyPath: connection.sshKeyPath,
       );
-      
+
       if (mounted) {
         Navigator.pop(context); // Close loading
         Navigator.push(
-          context, 
-          MaterialPageRoute(builder: (_) => DashboardScreen())
+          context,
+          MaterialPageRoute(builder: (_) => DashboardScreen()),
         );
       }
     } catch (e) {
@@ -121,7 +126,10 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
             title: const Text('Connection Failed'),
             content: Text('Connection failed: $e'),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
             ],
           ),
         );
@@ -133,14 +141,14 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        
+
         if (_isSelectionMode) {
           _toggleSelectionMode();
           return;
         }
-        
+
         final shouldExit = await showDialog<bool>(
           context: context,
           builder: (context) => const _ExitDialog(),
@@ -158,19 +166,25 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                   onPressed: _toggleSelectionMode,
                 )
               : null,
-          title: Text(_isSelectionMode ? '${_selectedIds.length} Selected' : 'Saved Connections'),
+          title: Text(
+            _isSelectionMode
+                ? '${_selectedIds.length} Selected'
+                : 'Saved Connections',
+          ),
           actions: [
             if (_isSelectionMode)
               IconButton(
                 icon: const Icon(Icons.delete, color: Colors.red),
-                onPressed: _selectedIds.isNotEmpty ? _deleteSelectedItems : null,
+                onPressed: _selectedIds.isNotEmpty
+                    ? _deleteSelectedItems
+                    : null,
               )
             else
               IconButton(
                 icon: const Icon(Icons.checklist),
                 tooltip: 'Select Delete',
                 onPressed: _toggleSelectionMode,
-              )
+              ),
           ],
         ),
         body: FutureBuilder<List<SavedConnection>>(
@@ -179,9 +193,9 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const Center(child: CircularProgressIndicator());
             }
-            
+
             final connections = snapshot.data ?? [];
-            
+
             return ListView.builder(
               itemCount: connections.length + 1, // +1 for "Add New"
               padding: const EdgeInsets.all(8),
@@ -198,7 +212,10 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                           child: Center(
                             child: Text(
                               'Connection information not found.',
-                              style: TextStyle(fontSize: 14, color: Colors.grey),
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey,
+                              ),
                             ),
                           ),
                         ),
@@ -207,12 +224,29 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                         color: Theme.of(context).colorScheme.tertiaryContainer,
                         child: ListTile(
                           visualDensity: VisualDensity.compact,
-                          leading: Icon(Icons.add_circle, color: Theme.of(context).colorScheme.onTertiaryContainer, size: 20),
-                          title: Text('Add New Connection', style: TextStyle(fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onTertiaryContainer, fontSize: 14)),
+                          leading: Icon(
+                            Icons.add_circle,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onTertiaryContainer,
+                            size: 20,
+                          ),
+                          title: Text(
+                            'Add New Connection',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onTertiaryContainer,
+                              fontSize: 14,
+                            ),
+                          ),
                           onTap: () async {
                             await Navigator.push(
                               context,
-                              MaterialPageRoute(builder: (_) => const ConnectionEditScreen()),
+                              MaterialPageRoute(
+                                builder: (_) => const ConnectionEditScreen(),
+                              ),
                             );
                             _refreshList();
                           },
@@ -221,24 +255,36 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                     ],
                   );
                 }
-  
+
                 final conn = connections[index];
                 final isSelected = _selectedIds.contains(conn.id);
-                
+
                 final card = Card(
-                  color: isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
+                  color: isSelected
+                      ? Theme.of(context).colorScheme.primaryContainer
+                      : null,
                   child: ListTile(
                     visualDensity: VisualDensity.compact,
                     leading: _isSelectionMode
                         ? Checkbox(
                             value: isSelected,
                             onChanged: (val) {
-                              if (conn.id != null) _toggleItemSelection(conn.id!);
+                              if (conn.id != null) {
+                                _toggleItemSelection(conn.id!);
+                              }
                             },
                           )
                         : const Icon(Icons.storage, size: 20),
-                    title: Text(conn.name, style: const TextStyle(fontSize: 14)),
-                    subtitle: Text('${conn.username}@${conn.host}:${conn.port}/${conn.databaseName}', style: const TextStyle(fontSize: 12)),
+                    title: Text(
+                      conn.name,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                    subtitle: Text(
+                      conn.databaseName.isNotEmpty
+                          ? '${conn.username}@${conn.host}:${conn.port}/${conn.databaseName}'
+                          : '${conn.username}@${conn.host}:${conn.port}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
                     onTap: () {
                       if (_isSelectionMode) {
                         if (conn.id != null) _toggleItemSelection(conn.id!);
@@ -261,7 +307,10 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                             onPressed: () async {
                               await Navigator.push(
                                 context,
-                                MaterialPageRoute(builder: (_) => ConnectionEditScreen(connection: conn)),
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      ConnectionEditScreen(connection: conn),
+                                ),
                               );
                               _refreshList();
                             },
@@ -274,12 +323,17 @@ class _ConnectionListScreenState extends State<ConnectionListScreen> {
                 } else {
                   return Dismissible(
                     key: Key(conn.id.toString()),
-                    background: Container(color: Colors.red, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 20), child: const Icon(Icons.delete, color: Colors.white)),
+                    background: Container(
+                      color: Colors.red,
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      child: const Icon(Icons.delete, color: Colors.white),
+                    ),
                     direction: DismissDirection.endToStart,
                     onDismissed: (direction) async {
                       if (conn.id != null) {
                         await DatabaseHelper().deleteConnection(conn.id!);
-                        // No need to refresh list fully as Dismissible removes it visually, 
+                        // No need to refresh list fully as Dismissible removes it visually,
                         // but refreshing state is good to keep sync.
                         // However, usually one should remove from list data source.
                         // For now we just let it be or wrapped in setstate to avoid errors?
@@ -334,7 +388,7 @@ class _ExitDialogState extends State<_ExitDialog> {
         },
         onAdFailedToLoad: (ad, err) {
           ad.dispose();
-          print('Failed to load a banner ad: ${err.message}');
+          Log.error('Failed to load a banner ad: ${err.message}');
         },
       ),
     )..load();
@@ -362,8 +416,8 @@ class _ExitDialogState extends State<_ExitDialog> {
               child: AdWidget(ad: _bannerAd!),
             )
           else
-             const SizedBox(
-              height: 250, 
+            const SizedBox(
+              height: 250,
               width: 300,
               child: Center(child: CircularProgressIndicator()),
             ),

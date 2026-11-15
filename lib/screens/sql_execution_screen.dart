@@ -12,7 +12,10 @@ import '../models/query_history.dart';
 import '../models/saved_query.dart';
 import 'package:code_text_field/code_text_field.dart';
 import 'package:highlight/languages/sql.dart';
-import 'package:highlight/highlight.dart' show highlight;
+// import 'package:highlight/highlight.dart' show highlight;
+import 'sql_execution/desktop_layout.dart';
+import 'sql_execution/mobile_layout.dart';
+import '../utils/logger.dart';
 
 class SqlExecutionScreen extends StatefulWidget {
   const SqlExecutionScreen({super.key});
@@ -24,10 +27,33 @@ class SqlExecutionScreen extends StatefulWidget {
 class _SqlExecutionScreenState extends State<SqlExecutionScreen> {
   late CodeController _sqlController;
 
+  List<Map<String, String>> tables = [];
+  bool isLoadingTables = false;
+
   @override
   void initState() {
     super.initState();
     _sqlController = CodeController(text: "select 1 ", language: sql);
+    _loadTables();
+  }
+
+  Future<void> _loadTables() async {
+    setState(() {
+      isLoadingTables = true;
+    });
+    try {
+      final dbService = DatabaseService();
+      final fetchedTables = await dbService.getTables();
+      setState(() {
+        tables = fetchedTables;
+      });
+    } catch (e) {
+      Log.error('Failed to load tables: $e');
+    } finally {
+      setState(() {
+        isLoadingTables = false;
+      });
+    }
   }
 
   List<PlutoColumn> columns = [];
@@ -186,7 +212,7 @@ class _SqlExecutionScreenState extends State<SqlExecutionScreen> {
           ),
         );
       } catch (e) {
-        // print('Failed to save history: $e');
+        // Log.error('Failed to save history: $e');
       }
 
       setState(() {
@@ -314,15 +340,13 @@ class _SqlExecutionScreenState extends State<SqlExecutionScreen> {
           directoryPath = dir?.path;
         }
 
-        if (directoryPath == null) {
-          directoryPath = (await getApplicationDocumentsDirectory()).path;
-        }
+        directoryPath ??= (await getApplicationDocumentsDirectory()).path;
 
         // 2. Create the full path
         final path = '$directoryPath/$fileName';
 
         final file = File(path);
-        print(path);
+        Log.info(path);
         await file.writeAsString(sb.toString());
 
         if (mounted) {
@@ -331,7 +355,7 @@ class _SqlExecutionScreenState extends State<SqlExecutionScreen> {
           );
         }
       } catch (e) {
-        print(e);
+        Log.error(e.toString());
         if (mounted) {
           // Check if permission error
           if (e.toString().contains('Permission denied')) {
@@ -407,176 +431,39 @@ class _SqlExecutionScreenState extends State<SqlExecutionScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('SQL Console')),
-      body: Stack(
-        children: [
-          Column(
-            children: [
-              // Top: SQL Input
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    InputDecorator(
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        hintText: 'Enter SQL query (e.g. SELECT * FROM users)',
-                        contentPadding: EdgeInsets.all(8),
-                      ),
-                      child: CodeField(
-                        controller: _sqlController,
-                        minLines: 6,
-                        maxLines: 6,
-                        textStyle: const TextStyle(
-                          fontSize: 14,
-                          fontFamily: 'monospace',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        SizedBox(
-                          width: 80,
-                          height: 30,
-                          child: ElevatedButton(
-                            onPressed: isLoading ? null : _runQuery,
-                            style: ElevatedButton.styleFrom(
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.zero,
-                              ),
-                              padding: EdgeInsets.zero,
-                              textStyle: const TextStyle(fontSize: 12),
-                            ),
-                            child: isLoading
-                                ? const SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: Colors.white,
-                                    ),
-                                  )
-                                : const Text('Run'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 80,
-                          height: 30,
-                          child: OutlinedButton(
-                            onPressed: _saveSql,
-                            style: OutlinedButton.styleFrom(
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.zero,
-                              ),
-                              padding: EdgeInsets.zero,
-                              textStyle: const TextStyle(fontSize: 11),
-                            ),
-                            child: const Text('Save'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 80,
-                          height: 30,
-                          child: OutlinedButton(
-                            onPressed: _loadSql,
-                            style: OutlinedButton.styleFrom(
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.zero,
-                              ),
-                              padding: EdgeInsets.zero,
-                              textStyle: const TextStyle(fontSize: 11),
-                            ),
-                            child: const Text('Load'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        SizedBox(
-                          width: 80,
-                          height: 30,
-                          child: OutlinedButton(
-                            onPressed: _exportResult,
-                            style: OutlinedButton.styleFrom(
-                              shape: const RoundedRectangleBorder(
-                                borderRadius: BorderRadius.zero,
-                              ),
-                              padding: EdgeInsets.zero,
-                              textStyle: const TextStyle(fontSize: 11),
-                            ),
-                            child: const Text('Export'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              // Error / Info Area
-              if (errorMessage != null)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(8.0),
-                  color: errorMessage!.startsWith('Error')
-                      ? Theme.of(context).colorScheme.errorContainer
-                      : Colors.green.shade900,
-                  child: Text(
-                    errorMessage!,
-                    style: TextStyle(
-                      color: errorMessage!.startsWith('Error')
-                          ? Theme.of(context).colorScheme.onErrorContainer
-                          : Colors.green.shade100,
-                    ),
-                  ),
-                ),
-
-              // Bottom: Grid
-              Expanded(
-                child: columns.isEmpty
-                    ? const Center(child: Text('No results to display'))
-                    : PlutoGrid(
-                        key: _gridKey,
-                        columns: columns,
-                        rows: rows,
-                        onLoaded: (PlutoGridOnLoadedEvent event) {
-                          event.stateManager.setShowColumnFilter(false);
-                        },
-                        configuration: const PlutoGridConfiguration(
-                          style: PlutoGridStyleConfig.dark(
-                            rowHeight: 25, // Compact row height
-                            columnHeight: 30, // Compact header height
-                            cellTextStyle: TextStyle(
-                              fontSize: 12,
-                            ), // Smaller text
-                          ),
-                        ),
-                      ),
-              ),
-            ],
-          ),
-          if (connectionProvider.status == ConnectionStatus.connecting)
-            Container(
-              color: Colors.black.withAlpha(76),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 16),
-                    Text(
-                      'Re-connecting to database...',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          if (constraints.maxWidth > 800) {
+            return DesktopLayout(
+              sqlController: _sqlController,
+              isLoading: isLoading,
+              errorMessage: errorMessage,
+              columns: columns,
+              rows: rows,
+              gridKey: _gridKey,
+              onRunQuery: _runQuery,
+              onSaveSql: _saveSql,
+              onLoadSql: _loadSql,
+              onExportResult: _exportResult,
+              connectionStatus: connectionProvider.status,
+              tables: tables,
+            );
+          } else {
+            return MobileLayout(
+              sqlController: _sqlController,
+              isLoading: isLoading,
+              errorMessage: errorMessage,
+              columns: columns,
+              rows: rows,
+              gridKey: _gridKey,
+              onRunQuery: _runQuery,
+              onSaveSql: _saveSql,
+              onLoadSql: _loadSql,
+              onExportResult: _exportResult,
+              connectionStatus: connectionProvider.status,
+            );
+          }
+        },
       ),
     );
   }
@@ -659,7 +546,7 @@ class _LoadQueryDialogState extends State<_LoadQueryDialog>
                             ? const Center(child: Text('No saved queries.'))
                             : ListView.separated(
                                 itemCount: _savedQueries.length,
-                                separatorBuilder: (_, __) =>
+                                separatorBuilder: (_, _) =>
                                     const Divider(height: 1),
                                 itemBuilder: (context, index) {
                                   final item = _savedQueries[index];
@@ -692,7 +579,7 @@ class _LoadQueryDialogState extends State<_LoadQueryDialog>
                             ? const Center(child: Text('No execution history.'))
                             : ListView.separated(
                                 itemCount: _history.length,
-                                separatorBuilder: (_, __) =>
+                                separatorBuilder: (_, _) =>
                                     const Divider(height: 1),
                                 itemBuilder: (context, index) {
                                   final item = _history[index];

@@ -221,8 +221,7 @@ class _ConnectionEditScreenState extends State<ConnectionEditScreen> {
               const SizedBox(height: 8),
               TextFormField(
                 controller: _dbNameController,
-                decoration: const InputDecoration(labelText: 'Database Name', border: OutlineInputBorder()),
-                validator: (v) => v!.isEmpty ? 'Required' : null,
+                decoration: const InputDecoration(labelText: 'Database Name (Optional)', border: OutlineInputBorder()),
               ), // SSH Section
               const SizedBox(height: 16),
               SwitchListTile(

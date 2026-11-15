@@ -6,7 +6,7 @@ import 'package:mysql_client/mysql_client.dart';
 
 import '../models/ssh_config.dart';
 import '../models/db_config.dart';
-import 'connection_manager.dart';
+// import 'connection_manager.dart';
 import '../utils/logger.dart';
 
 class DatabaseService {
@@ -23,27 +23,16 @@ class DatabaseService {
   MySQLConnection? _dbConnection;
   ServerSocket? _forwardingServer;
 
-  // Config storage for auto-reconnect
-  SSHConfig? _lastSshConfig;
-  DBConfig? _lastDbConfig;
-  int _lastLocalForwardPort = 3307;
-
-  // Reconnection lock to prevent concurrent attempts
-  Future<void>? _reconnectFuture;
-
-
   bool get isConnected => _dbConnection != null && _dbConnection!.connected;
 
-  Future<void> connect(SSHConfig? sshConfig, DBConfig dbConfig, {int localForwardPort = 3307}) async {
-    // Store configs for future reconnects
-    _lastSshConfig = sshConfig;
-    _lastDbConfig = dbConfig;
-    _lastLocalForwardPort = localForwardPort;
-
-
+  Future<void> connect(
+    SSHConfig? sshConfig,
+    DBConfig dbConfig, {
+    int localForwardPort = 3307,
+  }) async {
     // Determine connection candidates
     final candidates = <String>[dbConfig.host];
-    
+
     if (sshConfig != null) {
       // If tunneling, we might want to try loopback addresses on the remote server
       if (dbConfig.host != '127.0.0.1' && !candidates.contains('127.0.0.1')) {
@@ -57,240 +46,200 @@ class DatabaseService {
     Object? lastError; // Keep track of the last error to throw if all fail
 
     for (final hostCandidate in candidates) {
-       try {
-         print('Attempting connection to DB host: $hostCandidate ...');
-         final configToUse = DBConfig(
-            host: hostCandidate,
-            port: dbConfig.port,
-            username: dbConfig.username,
-            password: dbConfig.password,
-            databaseName: dbConfig.databaseName,
-         );
-         
-         await _attemptConnection(sshConfig, configToUse, localForwardPort);
-         print('Connected successfully using host: $hostCandidate');
-         return; // Success!
-       } catch (e) {
-         print('Failed to connect to $hostCandidate: $e');
-         lastError = e;
-         
-         // Cleanup before next attempt
-         try { await _dbConnection?.close(); } catch (_) {}
-         try { await _forwardingServer?.close(); } catch (_) {}
-         try { _sshClient?.close(); } catch (_) {} // Also reset SSH between attempts to be safe? 
-         // Actually _attemptConnection re-creates SSH Client so we should close it.
-         _sshClient = null;
-       }
+      try {
+        Log.info('Attempting connection to DB host: $hostCandidate ...');
+        final configToUse = DBConfig(
+          host: hostCandidate,
+          port: dbConfig.port,
+          username: dbConfig.username,
+          password: dbConfig.password,
+          databaseName: dbConfig.databaseName,
+        );
+
+        await _attemptConnection(sshConfig, configToUse, localForwardPort);
+        Log.info('Connected successfully using host: $hostCandidate');
+        return; // Success!
+      } catch (e) {
+        Log.error('Failed to connect to $hostCandidate: $e');
+        lastError = e;
+
+        // Cleanup before next attempt
+        try {
+          await _dbConnection?.close();
+        } catch (_) {}
+        try {
+          await _forwardingServer?.close();
+        } catch (_) {}
+        try {
+          _sshClient?.close();
+        } catch (_) {} // Also reset SSH between attempts to be safe?
+        // Actually _attemptConnection re-creates SSH Client so we should close it.
+        _sshClient = null;
+      }
     }
-    
+
     // If we get here, all attempts failed
-    print('All connection attempts failed. Last error: $lastError');
+    Log.error('All connection attempts failed. Last error: $lastError');
     if (lastError != null) throw lastError;
   }
 
-  Future<void> _attemptConnection(SSHConfig? sshConfig, DBConfig dbConfig, int localForwardPort) async {
-      if (sshConfig != null) {
-        print('Connecting to SSH Jump Host: ${sshConfig.host}...');
-        
-        final socket = await SSHSocket.connect(sshConfig.host, sshConfig.port);
-        
-        _sshClient = SSHClient(
-          socket,
-          username: sshConfig.username,
-          onPasswordRequest: () {
-            return sshConfig.password;
-          },
-          identities: sshConfig.privateKey != null 
-            ? [...SSHKeyPair.fromPem(sshConfig.privateKey!)] 
+  Future<void> _attemptConnection(
+    SSHConfig? sshConfig,
+    DBConfig dbConfig,
+    int localForwardPort,
+  ) async {
+    if (sshConfig != null) {
+      Log.info('Connecting to SSH Jump Host: ${sshConfig.host}...');
+
+      final socket = await SSHSocket.connect(sshConfig.host, sshConfig.port);
+
+      _sshClient = SSHClient(
+        socket,
+        username: sshConfig.username,
+        onPasswordRequest: () {
+          return sshConfig.password;
+        },
+        identities: sshConfig.privateKey != null
+            ? [...SSHKeyPair.fromPem(sshConfig.privateKey!)]
             : [],
-        );
-
-        print('SSH Connected. Setting up tunnel...');
-
-        if (_forwardingServer != null) {
-          try { await _forwardingServer!.close(); } catch (_) {}
-        }
-
-        try {
-           _forwardingServer = await ServerSocket.bind('127.0.0.1', localForwardPort);
-        } catch (e) {
-           print('Failed to bind local port $localForwardPort, trying random port...');
-           _forwardingServer = await ServerSocket.bind('127.0.0.1', 0);
-           localForwardPort = _forwardingServer!.port; 
-        }
-        
-        _forwardingServer!.listen((clientSocket) async {
-          print('Tunnel: Client connected to local port $localForwardPort');
-          try {
-             print('Tunnel: Requesting forwarding to ${dbConfig.host}:${dbConfig.port}...');
-             final channel = await _sshClient!.forwardLocal(dbConfig.host, dbConfig.port);
-             print('Tunnel: Forwarding channel accepted by remote SSH server.');
-             
-             clientSocket.listen(
-               (data) {
-                 print('Tunnel: Client -> Remote (${data.length} bytes)');
-                 channel.sink.add(data);
-               },
-               onDone: () {
-                 print('Tunnel: Client connection closed');
-                 channel.close();
-               },
-               onError: (e) {
-                 print('Tunnel: Client socket error: $e');
-                 channel.close();
-               },
-             );
-             
-             channel.stream.listen(
-               (data) {
-                 print('Tunnel: Remote -> Client (${data.length} bytes)');
-                 clientSocket.add(data);
-               },
-               onDone: () {
-                 print('Tunnel: Remote channel closed');
-                 clientSocket.destroy(); // Force release
-               },
-               onError: (e) {
-                 print('Tunnel: Remote channel error: $e');
-                 clientSocket.destroy(); // Force release
-               },
-             );
-             
-          } catch (e) {
-            print('Tunnel forwarding error: $e');
-            clientSocket.destroy();
-          }
-        });
-
-        print('Tunnel established on 127.0.0.1:$localForwardPort -> ${dbConfig.host}:${dbConfig.port}');
-      } else {
-        print('SSH Config not provided. Connecting directly to database...');
-      }
-
-      print('Connecting to Database${sshConfig != null ? ' via Tunnel' : ''}...');
-      
-      final targetHost = sshConfig != null ? '127.0.0.1' : dbConfig.host;
-      final targetPort = sshConfig != null ? localForwardPort : dbConfig.port;
-      
-      // Delay to ensure tunnel is ready
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      print('Connecting to DatabaseClient...');
-      _dbConnection = await MySQLConnection.createConnection(
-        host: targetHost,
-        port: targetPort,
-        userName: dbConfig.username,
-        password: dbConfig.password,
-        databaseName: dbConfig.databaseName,
-        secure: false, 
       );
 
-      await _dbConnection!.connect(timeoutMs: 10000);
-      
-      print('Database Connected successfully!');
+      Log.info('SSH Connected. Setting up tunnel...');
+
+      if (_forwardingServer != null) {
+        try {
+          await _forwardingServer!.close();
+        } catch (_) {}
+      }
+
+      try {
+        _forwardingServer = await ServerSocket.bind(
+          '127.0.0.1',
+          localForwardPort,
+        );
+      } catch (e) {
+        Log.error(
+          'Failed to bind local port $localForwardPort, trying random port...',
+        );
+        _forwardingServer = await ServerSocket.bind('127.0.0.1', 0);
+        localForwardPort = _forwardingServer!.port;
+      }
+
+      _forwardingServer!.listen((clientSocket) async {
+        Log.debug('Tunnel: Client connected to local port $localForwardPort');
+        try {
+          Log.debug(
+            'Tunnel: Requesting forwarding to ${dbConfig.host}:${dbConfig.port}...',
+          );
+          final channel = await _sshClient!.forwardLocal(
+            dbConfig.host,
+            dbConfig.port,
+          );
+          Log.debug('Tunnel: Forwarding channel accepted by remote SSH server.');
+
+          clientSocket.listen(
+            (data) {
+              Log.debug('Tunnel: Client -> Remote (${data.length} bytes)');
+              channel.sink.add(data);
+            },
+            onDone: () {
+              Log.debug('Tunnel: Client connection closed');
+              channel.close();
+            },
+            onError: (e) {
+              Log.error('Tunnel: Client socket error: $e');
+              channel.close();
+            },
+          );
+
+          channel.stream.listen(
+            (data) {
+              Log.debug('Tunnel: Remote -> Client (${data.length} bytes)');
+              clientSocket.add(data);
+            },
+            onDone: () {
+              Log.debug('Tunnel: Remote channel closed');
+              clientSocket.destroy(); // Force release
+            },
+            onError: (e) {
+              Log.error('Tunnel: Remote channel error: $e');
+              clientSocket.destroy(); // Force release
+            },
+          );
+        } catch (e) {
+          Log.error('Tunnel forwarding error: $e');
+          clientSocket.destroy();
+        }
+      });
+
+      Log.info(
+        'Tunnel established on 127.0.0.1:$localForwardPort -> ${dbConfig.host}:${dbConfig.port}',
+      );
+    } else {
+      Log.info('SSH Config not provided. Connecting directly to database...');
+    }
+
+    Log.info('Connecting to Database${sshConfig != null ? ' via Tunnel' : ''}...');
+
+    final targetHost = sshConfig != null ? '127.0.0.1' : dbConfig.host;
+    final targetPort = sshConfig != null ? localForwardPort : dbConfig.port;
+
+    // Delay to ensure tunnel is ready
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    Log.info('Connecting to DatabaseClient...');
+    _dbConnection = await MySQLConnection.createConnection(
+      host: targetHost,
+      port: targetPort,
+      userName: dbConfig.username,
+      password: dbConfig.password,
+      databaseName: dbConfig.databaseName.trim().isNotEmpty ? dbConfig.databaseName.trim() : null,
+      secure: false,
+    );
+
+    await _dbConnection!.connect(timeoutMs: 10000);
+
+    Log.info('Database Connected successfully!');
   }
 
   Future<void> disconnect({bool clearCredentials = true}) async {
-    print('Disconnecting...');
-    try { await _dbConnection?.close(); } catch(e) { print('Error closing DB: $e'); }
+    Log.info('Disconnecting...');
+    try {
+      await _dbConnection?.close();
+    } catch (e) {
+      Log.error('Error closing DB: $e');
+    }
     _dbConnection = null;
-    
-    try { await _forwardingServer?.close(); } catch(e) { print('Error closing Server: $e'); }
+
+    try {
+      await _forwardingServer?.close();
+    } catch (e) {
+      Log.error('Error closing Server: $e');
+    }
     _forwardingServer = null;
 
-    try { _sshClient?.close(); } catch(e) { print('Error closing SSH: $e'); }
+    try {
+      _sshClient?.close();
+    } catch (e) {
+      Log.error('Error closing SSH: $e');
+    }
     _sshClient = null;
 
-    if (clearCredentials) {
-      // Reset config storage ONLY on explicit user logout/disconnect
-      _lastDbConfig = null;
-      _lastSshConfig = null;
-      print('Credentials cleared.');
-    }
-    
-    print('Disconnected.');
+    Log.info('Disconnected.');
   }
 
-  // Helper method to reconnect using stored credentials
-  Future<void> reconnect() async {
-    if (_reconnectFuture != null) {
-      print('Reconnection already in progress, waiting...');
-      return _reconnectFuture;
-    }
-
-    _reconnectFuture = _doReconnect();
-    try {
-      await _reconnectFuture;
-    } finally {
-      _reconnectFuture = null;
-    }
-  }
-
-  Future<void> _doReconnect() async {
-    if (_lastDbConfig == null) {
-      throw Exception('No connection configuration stored to reconnect.');
-    }
-    print('Auto-reconnecting...');
-    
-    // Notify ConnectionManager about the reconnection attempt
-    try {
-      final manager = ConnectionManager();
-      manager.statusNotifier.value = ConnectionStatus.connecting;
-      
-      await connect(_lastSshConfig, _lastDbConfig!, localForwardPort: _lastLocalForwardPort);
-      
-      manager.statusNotifier.value = ConnectionStatus.connected;
-    } catch (e) {
-      final manager = ConnectionManager();
-      manager.statusNotifier.value = ConnectionStatus.error;
-      manager.errorNotifier.value = e.toString();
-      rethrow;
-    }
-  }
-
-  // Wrapper for database operations with a single retry attempt on connection failure
+  // Wrapper for database operations
   Future<T> _executeWithRetry<T>(Future<T> Function() operation) async {
-    try {
-      if (_dbConnection == null) {
-        await reconnect();
-      }
-      return await operation();
-    } catch (e) {
-      // Check if it's a connection-related error
-      if (_isConnectionError(e) && _lastDbConfig != null) {
-        print('Connection error detected ($e). Attempting one-time auto-reconnect...');
-        try {
-          // Clean up current stale state without wiping credentials
-          await disconnect(clearCredentials: false); 
-          await reconnect();
-          print('Auto-reconnect successful. Retrying operation...');
-          return await operation();
-        } catch (retryError) {
-          print('Auto-reconnect failed: $retryError');
-          Log.error('Auto-reconnect failed: $retryError');
-          // If auto-reconnect fails, we should probably mark as disconnected 
-          // so next attempt doesn't think we are connected
-          _dbConnection = null;
-          throw e; // Throw original error
-        }
-      }
-      rethrow;
+    if (_dbConnection == null || !_dbConnection!.connected) {
+      throw Exception('Database is not connected. Please connect first.');
     }
+    return await operation();
   }
 
-  bool _isConnectionError(dynamic e) {
-    final errorStr = e.toString().toLowerCase();
-    return errorStr.contains('socketexception') || 
-           errorStr.contains('broken pipe') || 
-           errorStr.contains('connection closed') ||
-           errorStr.contains('handshake failed') ||
-           errorStr.contains('is not connected') ||
-           errorStr.contains('connection reset');
-  }
-
-
-  
-  Future<IResultSet> executeQuery(String query, [Map<String, dynamic>? params]) async {
+  Future<IResultSet> executeQuery(
+    String query, [
+    Map<String, dynamic>? params,
+  ]) async {
     return await _executeWithRetry(() => _dbConnection!.execute(query, params));
   }
 
@@ -310,10 +259,10 @@ class DatabaseService {
         ORDER BY 
           TABLE_NAME ASC
       """;
-      
+
       final results = await _dbConnection!.execute(query);
       final tables = <Map<String, String>>[];
-      
+
       for (var row in results.rows) {
         tables.add({
           'name': row.colAt(0) ?? '',
@@ -331,7 +280,7 @@ class DatabaseService {
     return await _executeWithRetry(() async {
       final query = "DESCRIBE $tableName";
       final results = await _dbConnection!.execute(query);
-      
+
       final schema = <Map<String, String>>[];
       for (var row in results.rows) {
         schema.add({
@@ -382,7 +331,9 @@ class DatabaseService {
 
       // 1. Get Create Table
       try {
-        final createResult = await _dbConnection!.execute("SHOW CREATE TABLE $tableName");
+        final createResult = await _dbConnection!.execute(
+          "SHOW CREATE TABLE $tableName",
+        );
         if (createResult.rows.isNotEmpty) {
           sb.writeln('DROP TABLE IF EXISTS `$tableName`;');
           sb.writeln(createResult.rows.first.colAt(1));
@@ -395,24 +346,30 @@ class DatabaseService {
 
       // 2. Get Data
       try {
-        final dataResult = await _dbConnection!.execute("SELECT * FROM $tableName");
+        final dataResult = await _dbConnection!.execute(
+          "SELECT * FROM $tableName",
+        );
         if (dataResult.rows.isNotEmpty) {
           sb.writeln('LOCK TABLES `$tableName` WRITE;');
           sb.writeln('/*!40000 ALTER TABLE `$tableName` DISABLE KEYS */;');
-          
+
           for (var row in dataResult.rows) {
-             final values = <String>[];
-             for (var val in row.assoc().values) {
-               if (val == null) {
-                 values.add('NULL');
-               } else {
-                 final escaped = val.replaceAll("'", "''").replaceAll(r'\', r'\\');
-                 values.add("'$escaped'");
-               }
-             }
-             sb.writeln("INSERT INTO `$tableName` VALUES (${values.join(', ')});");
+            final values = <String>[];
+            for (var val in row.assoc().values) {
+              if (val == null) {
+                values.add('NULL');
+              } else {
+                final escaped = val
+                    .replaceAll("'", "''")
+                    .replaceAll(r'\', r'\\');
+                values.add("'$escaped'");
+              }
+            }
+            sb.writeln(
+              "INSERT INTO `$tableName` VALUES (${values.join(', ')});",
+            );
           }
-          
+
           sb.writeln('/*!40000 ALTER TABLE `$tableName` ENABLE KEYS */;');
           sb.writeln('UNLOCK TABLES;');
         }
@@ -428,19 +385,21 @@ class DatabaseService {
   Future<String> exportTableToCsv(String tableName) async {
     return await _executeWithRetry(() async {
       final sb = StringBuffer();
-      final dataResult = await _dbConnection!.execute("SELECT * FROM $tableName");
-      
+      final dataResult = await _dbConnection!.execute(
+        "SELECT * FROM $tableName",
+      );
+
       if (dataResult.cols.isNotEmpty) {
         sb.writeln(dataResult.cols.map((c) => '"${c.name}"').join(','));
         for (var row in dataResult.rows) {
           final values = <String>[];
           for (var val in row.assoc().values) {
-              if (val == null) {
-                values.add('');
-              } else {
-                 final escaped = val.replaceAll('"', '""');
-                 values.add('"$escaped"');
-              }
+            if (val == null) {
+              values.add('');
+            } else {
+              final escaped = val.replaceAll('"', '""');
+              values.add('"$escaped"');
+            }
           }
           sb.writeln(values.join(','));
         }
@@ -449,7 +408,11 @@ class DatabaseService {
     });
   }
 
-  Future<void> deleteRow(String tableName, String pkColumn, dynamic pkValue) async {
+  Future<void> deleteRow(
+    String tableName,
+    String pkColumn,
+    dynamic pkValue,
+  ) async {
     await _executeWithRetry(() async {
       final query = "DELETE FROM `$tableName` WHERE `$pkColumn` = :pk";
       await _dbConnection!.execute(query, {'pk': pkValue});
@@ -460,15 +423,22 @@ class DatabaseService {
     await _executeWithRetry(() async {
       final columns = data.keys.map((k) => "`$k`").join(', ');
       final placeholders = data.keys.map((k) => ":$k").join(', ');
-      final query = "INSERT INTO `$tableName` ($columns) VALUES ($placeholders)";
+      final query =
+          "INSERT INTO `$tableName` ($columns) VALUES ($placeholders)";
       await _dbConnection!.execute(query, data);
     });
   }
 
-  Future<void> updateRow(String tableName, String pkColumn, dynamic pkValue, Map<String, dynamic> data) async {
+  Future<void> updateRow(
+    String tableName,
+    String pkColumn,
+    dynamic pkValue,
+    Map<String, dynamic> data,
+  ) async {
     await _executeWithRetry(() async {
       final setClause = data.keys.map((k) => "`$k` = :$k").join(', ');
-      final query = "UPDATE `$tableName` SET $setClause WHERE `$pkColumn` = :pkValue";
+      final query =
+          "UPDATE `$tableName` SET $setClause WHERE `$pkColumn` = :pkValue";
       final params = Map<String, dynamic>.from(data);
       params['pkValue'] = pkValue;
       await _dbConnection!.execute(query, params);
@@ -477,7 +447,9 @@ class DatabaseService {
 
   Future<String> getTableDDL(String tableName) async {
     return await _executeWithRetry(() async {
-      final createResult = await _dbConnection!.execute("SHOW CREATE TABLE `$tableName`");
+      final createResult = await _dbConnection!.execute(
+        "SHOW CREATE TABLE `$tableName`",
+      );
       if (createResult.rows.isNotEmpty) {
         return createResult.rows.first.colAt(1) ?? '-- DDL not found';
       }
@@ -486,10 +458,14 @@ class DatabaseService {
   }
 
   Future<void> truncateTable(String tableName) async {
-    await _executeWithRetry(() => _dbConnection!.execute("TRUNCATE TABLE `$tableName`"));
+    await _executeWithRetry(
+      () => _dbConnection!.execute("TRUNCATE TABLE `$tableName`"),
+    );
   }
 
   Future<void> dropTable(String tableName) async {
-    await _executeWithRetry(() => _dbConnection!.execute("DROP TABLE `$tableName`"));
+    await _executeWithRetry(
+      () => _dbConnection!.execute("DROP TABLE `$tableName`"),
+    );
   }
 }

@@ -10,6 +10,6 @@ class DBConfig {
     this.port = 3306,
     required this.username,
     required this.password,
-    required this.databaseName,
+    this.databaseName = '',
   });
 }

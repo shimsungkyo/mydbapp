@@ -81,10 +81,10 @@ class DatabaseHelper {
     
     // Encrypt passwords before saving
     if (map['password'] != null) {
-      map['password'] = EncryptionService.encrypt(map['password']);
+      map['password'] = await EncryptionService.encrypt(map['password']);
     }
     if (map['ssh_password'] != null) {
-      map['ssh_password'] = EncryptionService.encrypt(map['ssh_password']);
+      map['ssh_password'] = await EncryptionService.encrypt(map['ssh_password']);
     }
     
     return await db.insert('saved_connections', map, conflictAlgorithm: ConflictAlgorithm.replace);
@@ -94,19 +94,21 @@ class DatabaseHelper {
     final db = await database;
     final maps = await db.query('saved_connections');
     
-    return List.generate(maps.length, (i) {
-      var map = Map<String, dynamic>.from(maps[i]);
+    final results = <SavedConnection>[];
+    for (final m in maps) {
+      var map = Map<String, dynamic>.from(m);
       
       // Decrypt passwords when loading
       if (map['password'] != null) {
-        map['password'] = EncryptionService.decrypt(map['password']);
+        map['password'] = await EncryptionService.decrypt(map['password']);
       }
       if (map['ssh_password'] != null) {
-        map['ssh_password'] = EncryptionService.decrypt(map['ssh_password']);
+        map['ssh_password'] = await EncryptionService.decrypt(map['ssh_password']);
       }
       
-      return SavedConnection.fromMap(map);
-    });
+      results.add(SavedConnection.fromMap(map));
+    }
+    return results;
   }
   
   Future<void> deleteConnection(int id) async {
